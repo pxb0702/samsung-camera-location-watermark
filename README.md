@@ -1,0 +1,59 @@
+# Samsung Camera Auto Location & Time Watermark (三星相机地点时间水印助手)
+
+专为三星 Galaxy 系列手机（One UI）深度定制的后台自动地点与时间水印合成工具。无需改变拍照习惯，保留三星原生相机的极致画质与计算摄影算法，拍照后自动提取 EXIF GPS 经纬度并逆地理编码出中文具体地址，自动合成高质感圆角水牌。
+
+---
+
+## 🌟 核心特性
+
+- **原生画质保留**：直接使用三星手机原生相机拍摄，享受完整 HDR、夜景模式与超清算法。
+- **智能后台监听**：采用 Android `ContentObserver` 异步监听相册媒体变更，拍照即处理，无感合成。
+- **高精度中文地名逆编码**：
+  - 优先调用三星系统内置 Geocoder（国内版由高德/百度地图引擎提供精准到省市区街道及建筑门牌号）。
+  - 网络备选方案调用 OpenStreetMap Nominatim 逆编码。
+  - 离线环境下自动降级展示高精度经纬度坐标。
+- **三星 One UI 设计风格水印**：
+  - 半透明圆角磨砂深色底胶囊设计，强光、弱光或复杂背景均清晰可见。
+  - 水印文字比例基于照片分辨率自适应计算，适配 1200 万至 2 亿超高像素照片。
+  - 自动保留照片原始 EXIF 拍摄信息（光圈、焦段、快门时间等）。
+- **防死循环与防抖保障**：智能过滤自身生成照片与超时照片，延时等待三星相机写盘完成，运行稳定。
+
+---
+
+## 📱 安装与使用
+
+### 1. 安装 APK
+可以直接在 [release/Samsung_Camera_Location_Watermark.apk](release/Samsung_Camera_Location_Watermark.apk) 下载安装。
+
+### 2. 权限授予
+首次启动时授予应用以下核心权限：
+- **相册与媒体访问**（读取相册新照片）
+- **照片位置信息读取 (`ACCESS_MEDIA_LOCATION`)**（关键：用于读取照片自带的 GPS 坐标）
+- **精确定位权限**
+
+### 3. 三星相机设置（关键）
+打开三星原生相机 ➔ 点击左上角【设置 ⚙️】 ➔ 开启【**位置标签**】（确保照片写入 GPS 坐标）。
+
+### 4. 开启监听
+在 App 主界面开启【**自动水印监听**】开关，之后即可正常拍照，水印照片会自动保存到相册 `Pictures/Watermark` 目录下。
+
+---
+
+## 🏗️ 架构与编译
+
+本项目基于原生 Android SDK 开发：
+- **Target SDK**: Android 14 (API 34)
+- **Min SDK**: Android 8.0 (API 26)
+- **Language**: Java 17
+- **Build System**: Gradle 8.5
+
+### 源码编译
+```bash
+./gradlew assembleDebug
+```
+编译产物位于 `app/build/outputs/apk/debug/app-debug.apk`。
+
+---
+
+## 📄 License
+MIT License
