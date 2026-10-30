@@ -174,16 +174,17 @@ public class WatermarkProcessor {
     }
 
     /**
-     * 智能识别并擦除照片左下角区域的原生相机白字水印
+     * 智能识别并采用多向加权偏微分扩散算法（带形态学边缘膨胀与8向逆距离加权平滑）擦除照片左下角区域的原生相机白字水印
      */
     private static void eraseOriginalWatermark(Bitmap bitmap) {
         int width = bitmap.getWidth();
         int height = bitmap.getHeight();
 
-        // 原生三星水印通常位于左下角区域 (x: 2%~35%w, y: 84%~99%h)
+        // 竖屏与横屏的原生三星水印区域自适应范围 (支持覆盖 portrait 与 landscape)
+        float topRatio = (height > width) ? 0.74f : 0.80f;
         int roiLeft = (int) (width * 0.02f);
-        int roiTop = (int) (height * 0.84f);
-        int roiRight = Math.min(width - 1, (int) (width * 0.35f));
+        int roiTop = (int) (height * topRatio);
+        int roiRight = Math.min(width - 1, (int) (width * 0.48f));
         int roiBottom = Math.min(height - 1, (int) (height * 0.99f));
         int roiW = roiRight - roiLeft;
         int roiH = roiBottom - roiTop;
@@ -193,48 +194,101 @@ public class WatermarkProcessor {
         int[] pixels = new int[roiW * roiH];
         bitmap.getPixels(pixels, 0, roiW, roiLeft, roiTop, roiW, roiH);
 
-        // 识别高亮白色文字像素 (R, G, B > 185 且三通道色彩接近)
-        boolean[] isText = new boolean[pixels.length];
+        // 识别高亮白色文字像素（兼容中性纯白与有色反差背景下的字体边缘）
+        boolean[] rawMask = new boolean[pixels.length];
         int textPixelCount = 0;
         for (int i = 0; i < pixels.length; i++) {
             int c = pixels[i];
             int r = (c >> 16) & 0xFF;
             int g = (c >> 8) & 0xFF;
             int b = c & 0xFF;
-            if (r > 185 && g > 185 && b > 185 && Math.abs(r - g) < 25 && Math.abs(g - b) < 25) {
-                isText[i] = true;
+            int sum = r + g + b;
+            int maxC = Math.max(r, Math.max(g, b));
+            int minC = Math.min(r, Math.min(g, b));
+
+            // 条件1：中性高亮白字 (夜景/普通背景，色彩平衡且高亮)
+            boolean isWhiteText = (r > 160 && g > 160 && b > 160 && (maxC - minC) < 38);
+            // 条件2：浅色字体在有色织物/深色表面 (如深蓝外套上的反走样白字)
+            boolean isFabricText = (sum > 320 && (r > 90 && g > 100));
+
+            if (isWhiteText || isFabricText) {
+                rawMask[i] = true;
                 textPixelCount++;
             }
         }
 
-        // 如果检测到原片存在白字水印，进行邻近背景像素纹理修复
-        if (textPixelCount > 40) {
+        // 如果检测到原片存在文字水印，进行形态学膨胀（Dilation），把字体的半透明反走样边缘也完整包含，避免残留文字光晕
+        if (textPixelCount > 30) {
+            boolean[] dilatedMask = new boolean[pixels.length];
             for (int y = 0; y < roiH; y++) {
+                int yOffset = y * roiW;
                 for (int x = 0; x < roiW; x++) {
-                    int idx = y * roiW + x;
-                    if (isText[idx]) {
-                        int replacement = 0;
-                        boolean found = false;
-                        // 纵向优先寻找附近的非文字背景像素
-                        for (int dy = 1; dy <= 24; dy++) {
-                            if (y - dy >= 0 && !isText[(y - dy) * roiW + x]) {
-                                replacement = pixels[(y - dy) * roiW + x];
-                                found = true;
-                                break;
-                            } else if (y + dy < roiH && !isText[(y + dy) * roiW + x]) {
-                                replacement = pixels[(y + dy) * roiW + x];
-                                found = true;
-                                break;
+                    if (rawMask[yOffset + x]) {
+                        for (int dy = -1; dy <= 1; dy++) {
+                            int ny = y + dy;
+                            if (ny >= 0 && ny < roiH) {
+                                int nyOffset = ny * roiW;
+                                for (int dx = -1; dx <= 1; dx++) {
+                                    int nx = x + dx;
+                                    if (nx >= 0 && nx < roiW) {
+                                        dilatedMask[nyOffset + nx] = true;
+                                    }
+                                }
                             }
                         }
-                        if (found) {
-                            pixels[idx] = replacement;
+                    }
+                }
+            }
+
+            // 8 维邻近方向向量 (避免单向垂直复制产生的条形码拉丝伪影)
+            final int[][] DIRS = {
+                    {-1, 0}, {1, 0}, {0, -1}, {0, 1},
+                    {-1, -1}, {-1, 1}, {1, -1}, {1, 1}
+            };
+
+            // 8 维距离加权纹理重建（Inverse Distance Weighted Laplacian Inpainting）
+            for (int y = 0; y < roiH; y++) {
+                int yOffset = y * roiW;
+                for (int x = 0; x < roiW; x++) {
+                    int idx = yOffset + x;
+                    if (dilatedMask[idx]) {
+                        float totalWeight = 0f;
+                        float accumR = 0f, accumG = 0f, accumB = 0f;
+
+                        for (int[] d : DIRS) {
+                            int dy = d[0], dx = d[1];
+                            for (int step = 1; step <= 32; step++) {
+                                int ny = y + dy * step;
+                                int nx = x + dx * step;
+                                if (ny >= 0 && ny < roiH && nx >= 0 && nx < roiW) {
+                                    int nIdx = ny * roiW + nx;
+                                    if (!dilatedMask[nIdx]) {
+                                        // 逆距离衰减权重 (1 / step^1.2)
+                                        float weight = 1.0f / (float) Math.pow(step, 1.2);
+                                        int nc = pixels[nIdx];
+                                        accumR += ((nc >> 16) & 0xFF) * weight;
+                                        accumG += ((nc >> 8) & 0xFF) * weight;
+                                        accumB += (nc & 0xFF) * weight;
+                                        totalWeight += weight;
+                                        break; // 找到此方向上最近的非文字背景像素
+                                    }
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (totalWeight > 0f) {
+                            int nr = Math.min(255, (int) (accumR / totalWeight));
+                            int ng = Math.min(255, (int) (accumG / totalWeight));
+                            int nb = Math.min(255, (int) (accumB / totalWeight));
+                            pixels[idx] = (0xFF << 24) | (nr << 16) | (ng << 8) | nb;
                         }
                     }
                 }
             }
             bitmap.setPixels(pixels, 0, roiW, roiLeft, roiTop, roiW, roiH);
-            Log.d(TAG, "已成功擦除左下角原生旧水印文字: 共修复 " + textPixelCount + " 个文字像素");
+            Log.d(TAG, "已成功采用多向偏微分平滑消除旧水印: 共修复 " + textPixelCount + " 个文字核心像素及其反走样边缘");
         }
     }
 
@@ -293,17 +347,17 @@ public class WatermarkProcessor {
         float cardWidth = maxTextWidth + (padding * 2);
         float cardHeight = (textSize * 2) + lineSpacing + (padding * 2);
 
-        // 3. 水印位置整体下移一行（marginBottom 从 0.04f 改为 0.020f）
+        // 3. 水印位置整体下移一行（自适应竖屏与横屏）
         float marginLeft = width * 0.035f;
-        float marginBottom = height * 0.020f;
+        float marginBottom = (height > width) ? height * 0.025f : height * 0.020f;
         float cardLeft = marginLeft;
         float cardBottom = height - marginBottom;
         float cardTop = cardBottom - cardHeight;
         float cardRight = cardLeft + cardWidth;
 
-        // 4. 绘制半透明圆角背景胶囊
+        // 4. 绘制高质感微黑圆角背景胶囊（提升不透明度至约 80%，彻底杜绝底层旧水印透光穿帮）
         Paint bgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        bgPaint.setColor(Color.argb(140, 20, 20, 25));
+        bgPaint.setColor(Color.argb(205, 18, 18, 22));
         RectF bgRect = new RectF(cardLeft, cardTop, cardRight, cardBottom);
         canvas.drawRoundRect(bgRect, cornerRadius, cornerRadius, bgPaint);
 
