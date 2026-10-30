@@ -69,6 +69,53 @@
 
         </LinearLayout>
 
+        <!-- 水印内容与机型配置卡片 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/bg_card"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="🏷️ 水印内容与机型设置"
+                android:textColor="#1F2328"
+                android:textSize="15sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="排版：第一行（时间 + 机型），第二行（详细中文地址）"
+                android:textColor="#5A5F67"
+                android:textSize="12sp" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:text="自定义机型名称 (显示在第一行)："
+                android:textColor="#1F2328"
+                android:textSize="13sp" />
+
+            <EditText
+                android:id="@+id/et_device_model"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:background="#EFEFEF"
+                android:padding="10dp"
+                android:hint="例如：三星 Z fold8"
+                android:textSize="14sp"
+                android:textColor="#1F2328"
+                android:singleLine="true" />
+
+        </LinearLayout>
+
         <!-- 权限与说明卡片 -->
         <LinearLayout
             android:layout_width="match_parent"

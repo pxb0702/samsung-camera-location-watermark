@@ -9,7 +9,10 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.view.View;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.ProgressBar;
 import android.widget.TextView;
@@ -34,6 +37,7 @@ public class MainActivity extends AppCompatActivity {
     private SwitchCompat switchService;
     private TextView tvStatusDesc;
     private TextView tvLocationHint;
+    private EditText etDeviceModel;
     private Button btnGrantPermissions;
     private Button btnPickPhotoTest;
     private ImageView imgPreview;
@@ -68,11 +72,24 @@ public class MainActivity extends AppCompatActivity {
         switchService = findViewById(R.id.switch_service);
         tvStatusDesc = findViewById(R.id.tv_status_desc);
         tvLocationHint = findViewById(R.id.tv_location_hint);
+        etDeviceModel = findViewById(R.id.et_device_model);
         btnGrantPermissions = findViewById(R.id.btn_grant_permissions);
         btnPickPhotoTest = findViewById(R.id.btn_pick_photo_test);
         imgPreview = findViewById(R.id.img_preview);
         tvResultInfo = findViewById(R.id.tv_result_info);
         progressBar = findViewById(R.id.progress_bar);
+
+        etDeviceModel.setText(WatermarkProcessor.getDeviceModel(this));
+        etDeviceModel.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override
+            public void onTextChanged(CharSequence s, int start, int before, int count) {}
+            @Override
+            public void afterTextChanged(Editable s) {
+                prefs.edit().putString("custom_device_model", s.toString().trim()).apply();
+            }
+        });
 
         switchService.setOnCheckedChangeListener((buttonView, isChecked) -> {
             if (isChecked) {
@@ -191,7 +208,7 @@ public class MainActivity extends AppCompatActivity {
                 progressBar.setVisibility(View.GONE);
                 if (result.success) {
                     imgPreview.setImageURI(result.savedUri);
-                    tvResultInfo.setText("✅ 水印添加成功！已保存至相册\n🕒 时间：" + result.timeString + "\n📍 地址：" + result.address);
+                    tvResultInfo.setText("✅ 水印添加成功！已保存至相册\n🕒 第一行：" + result.timeString + "   " + result.deviceModel + "\n📍 第二行：" + result.address);
                 } else {
                     tvResultInfo.setText("❌ 处理失败: " + result.errorMessage);
                 }
