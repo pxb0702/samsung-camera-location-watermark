@@ -190,7 +190,7 @@ public class GeoLocationHelper {
                             }
                         }
 
-                        // 4. 提取乡镇/街道、区县、城市、省份
+                        // 4. 提取乡镇/街道、区县、城市、省份、国家
                         if (ac != null) {
                             String township = ac.optString("township", "").trim();
                             if (!township.isEmpty() && !parts.contains(township)) {
@@ -203,16 +203,30 @@ public class GeoLocationHelper {
                             }
 
                             String city = ac.optString("city", "").trim();
-                            if (city.isEmpty() || "[]".equals(city)) {
-                                city = ac.optString("province", "").trim();
-                            } else {
+                            if ("[]".equals(city)) {
+                                city = "";
+                            }
+                            String prov = ac.optString("province", "").trim();
+
+                            // 城市与省份处理 (直辖市如北京市/上海市，province为北京市，city为空)
+                            if (!city.isEmpty()) {
                                 if (!parts.contains(city)) {
                                     parts.add(city);
                                 }
-                                String prov = ac.optString("province", "").trim();
                                 if (!prov.isEmpty() && !prov.equals(city) && !parts.contains(prov)) {
                                     parts.add(prov);
                                 }
+                            } else if (!prov.isEmpty() && !parts.contains(prov)) {
+                                parts.add(prov);
+                            }
+
+                            // 5. 提取国家 (如 中国)
+                            String country = ac.optString("country", "").trim();
+                            if (country.isEmpty() || "[]".equals(country)) {
+                                country = "中国";
+                            }
+                            if (!parts.contains(country)) {
+                                parts.add(country);
                             }
                         }
 
@@ -274,7 +288,7 @@ public class GeoLocationHelper {
     }
 
     /**
-     * 清理并格式化 OSM display_name（移除末尾的国家“中国”与纯数字邮编，保留具体的建筑、门牌、道路、商圈与省市区）
+     * 清理并格式化 OSM display_name（移除纯数字邮编，保留具体的建筑、门牌、道路、商圈与省市区、国家）
      */
     public static String cleanOsmDisplayName(String displayName) {
         if (displayName == null || displayName.trim().isEmpty()) return "";
@@ -283,31 +297,17 @@ public class GeoLocationHelper {
         for (String p : rawParts) {
             String trimmed = p.trim();
             if (!trimmed.isEmpty()) {
-                parts.add(trimmed);
+                // 仅过滤掉 5~6 位纯数字邮政编码 (如 311223, 101312)
+                if (!trimmed.matches("^\\d{5,6}$")) {
+                    parts.add(trimmed);
+                }
             }
         }
-
-        // 移除末尾的国家名称 (中国 / China / CN)
-        if (!parts.isEmpty()) {
-            String last = parts.get(parts.size() - 1);
-            if ("中国".equals(last) || "China".equalsIgnoreCase(last) || "CN".equalsIgnoreCase(last)) {
-                parts.remove(parts.size() - 1);
-            }
-        }
-
-        // 移除末尾的 5~6 位纯数字邮政编码 (如 311223, 310026)
-        if (!parts.isEmpty()) {
-            String last = parts.get(parts.size() - 1);
-            if (last.matches("^\\d{5,6}$")) {
-                parts.remove(parts.size() - 1);
-            }
-        }
-
         return TextUtils.join(", ", parts);
     }
 
     /**
-     * 针对 Android 系统 Address 对象进行 POI 优先组合（建筑/机构排在最前，随后连接街道、区县与城市）
+     * 针对 Android 系统 Address 对象进行 POI 优先组合（建筑/机构排在最前，随后连接街道、区县、城市、省份、国家）
      */
     public static String formatAndroidAddress(Address addr) {
         if (addr == null) return null;
@@ -353,13 +353,21 @@ public class GeoLocationHelper {
         }
 
         // 5. 城市
-        if (locality != null && !locality.trim().isEmpty() && !locality.equals(admin)) {
+        if (locality != null && !locality.trim().isEmpty()) {
             list.add(locality.trim());
         }
 
         // 6. 省份
-        if (admin != null && !admin.trim().isEmpty()) {
+        if (admin != null && !admin.trim().isEmpty() && !admin.equals(locality)) {
             list.add(admin.trim());
+        }
+
+        // 7. 国家
+        String country = addr.getCountryName();
+        if (country != null && !country.trim().isEmpty() && !list.contains(country.trim())) {
+            list.add(country.trim());
+        } else if (!list.contains("中国")) {
+            list.add("中国");
         }
 
         if (list.size() >= 2) {
