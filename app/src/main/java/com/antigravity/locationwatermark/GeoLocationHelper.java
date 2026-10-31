@@ -21,36 +21,39 @@ import java.util.Locale;
 public class GeoLocationHelper {
     private static final String TAG = "GeoLocationHelper";
 
+    // 内置默认高德 LBS Web 服务 Key（支持国内住宅小区/AOI/航站楼/公园高精度毫秒级识别）
+    private static final String DEFAULT_AMAP_KEY = "893aa291ba8fd5ceea01973a6162f182";
+
     /**
-     * 将经纬度逆编码为格式化的中文详细地址（优先展示 建筑/航站楼/公园/酒店/小区 等具体 POI 地标）
+     * 将经纬度逆编码为格式化的中文详细地址（优先展示 小区/建筑/航站楼/公园/酒店 等具体 POI 地标）
      */
     public static String getAddress(Context context, double latitude, double longitude) {
         if (latitude == 0.0 && longitude == 0.0) {
             return "未知地点 (经纬度无效)";
         }
 
-        // 1. 优先检查用户自定义的高德地图 Web 服务 Key
+        // 1. 优先使用高德地图 Web 服务接口（国内最全的小区/AOI/航站楼/园区数据库）
         SharedPreferences prefs = context.getSharedPreferences("WatermarkPrefs", Context.MODE_PRIVATE);
-        String amapKey = prefs.getString("amap_api_key", "");
-        if (amapKey != null && !amapKey.trim().isEmpty()) {
-            String amapAddress = queryAmap(latitude, longitude, amapKey.trim());
-            if (amapAddress != null && !amapAddress.isEmpty()) {
-                Log.d(TAG, "高德逆编码成功: " + amapAddress);
-                return amapAddress;
-            }
+        String customAmapKey = prefs.getString("amap_api_key", "");
+        String amapKey = (customAmapKey != null && !customAmapKey.trim().isEmpty()) ? customAmapKey.trim() : DEFAULT_AMAP_KEY;
+
+        String amapAddress = queryAmap(latitude, longitude, amapKey);
+        if (amapAddress != null && !amapAddress.isEmpty()) {
+            Log.d(TAG, "高德逆编码成功 (含小区/地标): " + amapAddress);
+            return amapAddress;
         }
 
         String osmResult = null;
         String geocoderResult = null;
 
-        // 2. 尝试 OpenStreetMap Nominatim 逆地理编码（带 POI/建筑优先解析，符合 用户推崇的 建筑, 门牌, 道路, 商圈, 街道... 格式）
+        // 2. 备选方案：尝试 OpenStreetMap Nominatim 逆地理编码
         try {
             osmResult = queryOsmNominatim(latitude, longitude);
         } catch (Exception e) {
             Log.w(TAG, "OSM 逆编码异常: " + e.getMessage());
         }
 
-        // 3. 尝试 Android 系统内置 Geocoder（通过 POI 优先组合器格式化）
+        // 3. 备选方案：尝试 Android 系统内置 Geocoder（通过 POI 优先组合器格式化）
         try {
             if (Geocoder.isPresent()) {
                 Geocoder geocoder = new Geocoder(context, Locale.CHINA);
@@ -84,6 +87,153 @@ public class GeoLocationHelper {
     }
 
     /**
+     * 调用高德开放平台 Web 服务逆地理编码接口（超精准提取国内 小区、航站楼、写字楼、园区、公园等）
+     */
+    private static String queryAmap(double latitude, double longitude, String apiKey) {
+        try {
+            // WGS84 转 GCJ02 火星坐标系（高德在中国大陆必备转换，否则偏移约 500 米）
+            double[] gcj = wgs84ToGcj02(longitude, latitude);
+            String urlStr = String.format(Locale.US,
+                    "https://restapi.amap.com/v3/geocode/regeo?key=%s&location=%.6f,%.6f&extensions=all&radius=1000",
+                    apiKey, gcj[0], gcj[1]);
+            URL url = new URL(urlStr);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("GET");
+            conn.setRequestProperty("User-Agent", "Mozilla/5.0");
+            conn.setConnectTimeout(3800);
+            conn.setReadTimeout(3800);
+
+            if (conn.getResponseCode() == 200) {
+                BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), "UTF-8"));
+                StringBuilder response = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    response.append(line);
+                }
+                reader.close();
+
+                JSONObject root = new JSONObject(response.toString());
+                if ("1".equals(root.optString("status"))) {
+                    JSONObject regeocode = root.optJSONObject("regeocode");
+                    if (regeocode != null) {
+                        List<String> parts = new ArrayList<>();
+
+                        // 1. 优先提取所在 小区/园区/面状兴趣区 (AOI: Area of Interest，如 中海首开拾光里、杭州萧山国际机场)
+                        JSONArray aois = regeocode.optJSONArray("aois");
+                        String aoiName = null;
+                        if (aois != null && aois.length() > 0) {
+                            String rawAoi = aois.getJSONObject(0).optString("name", "").trim();
+                            if (!rawAoi.isEmpty()) {
+                                aoiName = rawAoi;
+                            }
+                        }
+
+                        // 2. 检查 POI（具体建筑、大厦、场馆）
+                        JSONArray pois = regeocode.optJSONArray("pois");
+                        String poiName = null;
+                        if (pois != null && pois.length() > 0) {
+                            for (int i = 0; i < Math.min(pois.length(), 6); i++) {
+                                JSONObject p = pois.getJSONObject(i);
+                                String name = p.optString("name", "").trim();
+                                // 过滤掉微小的服务设施（如充电桩、插座、洗手间、门、停车场）
+                                if (name.contains("插座") || name.contains("充电") || name.contains("厕所") ||
+                                    name.contains("卫生间") || name.contains("服务台") || name.contains("ATM") ||
+                                    name.contains("停车场") || name.contains("东门") || name.contains("西门") ||
+                                    name.contains("南门") || name.contains("北门")) {
+                                    continue;
+                                }
+                                poiName = name;
+                                break;
+                            }
+                        }
+
+                        // 决定主地标名称：AOI小区优先！
+                        String mainPlace = null;
+                        if (aoiName != null) {
+                            if (poiName != null && poiName.contains(aoiName)) {
+                                mainPlace = poiName; // 比如包含更具体的楼栋/航站楼
+                            } else {
+                                mainPlace = aoiName; // 比如：中海首开拾光里、杭州萧山国际机场
+                            }
+                        } else if (poiName != null) {
+                            mainPlace = poiName;
+                        }
+
+                        if (mainPlace != null) {
+                            parts.add(mainPlace);
+                        }
+
+                        // 3. 提取门牌与道路 (如 门牌号、旧河湾西路、翔天路)
+                        JSONObject ac = regeocode.optJSONObject("addressComponent");
+                        String street = null;
+                        if (ac != null) {
+                            JSONObject sn = ac.optJSONObject("streetNumber");
+                            if (sn != null) {
+                                String num = sn.optString("number", "").trim();
+                                String str = sn.optString("street", "").trim();
+                                if (!num.isEmpty()) parts.add(num);
+                                if (!str.isEmpty()) {
+                                    parts.add(str);
+                                    street = str;
+                                }
+                            }
+                        }
+
+                        // 如果门牌中未标明路名，尝试从周围路网（roads）中提取道路名（如 旧河湾西路）
+                        if (street == null) {
+                            JSONArray roads = regeocode.optJSONArray("roads");
+                            if (roads != null && roads.length() > 0) {
+                                String rName = roads.getJSONObject(0).optString("name", "").trim();
+                                if (!rName.isEmpty() && !parts.contains(rName)) {
+                                    parts.add(rName);
+                                }
+                            }
+                        }
+
+                        // 4. 提取乡镇/街道、区县、城市、省份
+                        if (ac != null) {
+                            String township = ac.optString("township", "").trim();
+                            if (!township.isEmpty() && !parts.contains(township)) {
+                                parts.add(township);
+                            }
+
+                            String district = ac.optString("district", "").trim();
+                            if (!district.isEmpty() && !parts.contains(district)) {
+                                parts.add(district);
+                            }
+
+                            String city = ac.optString("city", "").trim();
+                            if (city.isEmpty() || "[]".equals(city)) {
+                                city = ac.optString("province", "").trim();
+                            } else {
+                                if (!parts.contains(city)) {
+                                    parts.add(city);
+                                }
+                                String prov = ac.optString("province", "").trim();
+                                if (!prov.isEmpty() && !prov.equals(city) && !parts.contains(prov)) {
+                                    parts.add(prov);
+                                }
+                            }
+                        }
+
+                        if (!parts.isEmpty()) {
+                            return TextUtils.join(", ", parts);
+                        }
+
+                        String formatted = regeocode.optString("formatted_address", "");
+                        if (!formatted.isEmpty()) {
+                            return formatted;
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "高德逆编码失败: " + e.getMessage());
+        }
+        return null;
+    }
+
+    /**
      * 调用 OpenStreetMap Nominatim 逆地理编码
      */
     private static String queryOsmNominatim(double latitude, double longitude) {
@@ -94,7 +244,7 @@ public class GeoLocationHelper {
             URL url = new URL(urlStr);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
-            conn.setRequestProperty("User-Agent", "SamsungWatermarkApp/1.3 (pxb0702)");
+            conn.setRequestProperty("User-Agent", "SamsungWatermarkApp/1.4 (pxb0702)");
             conn.setConnectTimeout(3800);
             conn.setReadTimeout(3800);
 
@@ -224,114 +374,16 @@ public class GeoLocationHelper {
     }
 
     /**
-     * 调用高德开放平台 Web 服务逆地理编码接口（超精准提取国内 POI 航站楼、园区、写字楼、小区、公园等）
-     */
-    private static String queryAmap(double latitude, double longitude, String apiKey) {
-        try {
-            // WGS84 转 GCJ02 火星坐标系（高德在中国大陆必备转换，否则偏移约 500 米）
-            double[] gcj = wgs84ToGcj02(longitude, latitude);
-            String urlStr = String.format(Locale.US,
-                    "https://restapi.amap.com/v3/geocode/regeo?key=%s&location=%.6f,%.6f&extensions=all",
-                    apiKey, gcj[0], gcj[1]);
-            URL url = new URL(urlStr);
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setRequestMethod("GET");
-            conn.setRequestProperty("User-Agent", "Mozilla/5.0");
-            conn.setConnectTimeout(3500);
-            conn.setReadTimeout(3500);
-
-            if (conn.getResponseCode() == 200) {
-                BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), "UTF-8"));
-                StringBuilder response = new StringBuilder();
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    response.append(line);
-                }
-                reader.close();
-
-                JSONObject root = new JSONObject(response.toString());
-                if ("1".equals(root.optString("status"))) {
-                    JSONObject regeocode = root.optJSONObject("regeocode");
-                    if (regeocode != null) {
-                        List<String> parts = new ArrayList<>();
-
-                        // 优先提取最接近的 POI 名称（如 杭州萧山国际机场-4号航站楼、钱江新城万豪酒店）
-                        JSONArray pois = regeocode.optJSONArray("pois");
-                        String poiName = null;
-                        if (pois != null && pois.length() > 0) {
-                            JSONObject firstPoi = pois.getJSONObject(0);
-                            poiName = firstPoi.optString("name", "");
-                            if (!poiName.isEmpty()) {
-                                parts.add(poiName);
-                            }
-                        }
-
-                        // 提取 AOI 园区或地标（如 杭州萧山国际机场、市民中心）
-                        JSONArray aois = regeocode.optJSONArray("aois");
-                        if (aois != null && aois.length() > 0) {
-                            String aoiName = aois.getJSONObject(0).optString("name", "");
-                            if (!aoiName.isEmpty() && !aoiName.equals(poiName) && (poiName == null || !poiName.contains(aoiName))) {
-                                parts.add(aoiName);
-                            }
-                        }
-
-                        // 提取行政区划与道路
-                        JSONObject ac = regeocode.optJSONObject("addressComponent");
-                        if (ac != null) {
-                            JSONObject sn = ac.optJSONObject("streetNumber");
-                            if (sn != null) {
-                                String num = sn.optString("number", "");
-                                String street = sn.optString("street", "");
-                                if (!num.isEmpty()) parts.add(num);
-                                if (!street.isEmpty()) parts.add(street);
-                            } else {
-                                String township = ac.optString("township", "");
-                                if (!township.isEmpty()) parts.add(township);
-                            }
-
-                            String district = ac.optString("district", "");
-                            if (!district.isEmpty()) parts.add(district);
-
-                            String city = ac.optString("city", "");
-                            if (city.isEmpty() || city.equals("[]")) {
-                                city = ac.optString("province", "");
-                            } else {
-                                parts.add(city);
-                                String prov = ac.optString("province", "");
-                                if (!prov.isEmpty() && !prov.equals(city)) {
-                                    parts.add(prov);
-                                }
-                            }
-                        }
-
-                        if (!parts.isEmpty()) {
-                            return TextUtils.join(", ", parts);
-                        }
-
-                        String formatted = regeocode.optString("formatted_address", "");
-                        if (!formatted.isEmpty()) {
-                            return formatted;
-                        }
-                    }
-                }
-            }
-        } catch (Exception e) {
-            Log.w(TAG, "高德逆编码失败: " + e.getMessage());
-        }
-        return null;
-    }
-
-    /**
      * 评估地址信息的丰富度（优先奖励 建筑、酒店、航站楼、公园、小区等具体 POI 词汇）
      */
     private static int evaluateRichness(String addr) {
         if (addr == null || addr.trim().isEmpty()) return 0;
         int score = addr.split(",").length * 3;
         String[] poiKeywords = {
-                "酒店", "宾馆", "航站楼", "机场", "公园", "小区", "大厦", "商厦",
+                "酒店", "宾馆", "航站楼", "机场", "公园", "小区", "里", "大厦", "商厦",
                 "商场", "中心", "广场", "医院", "学校", "大学", "中学", "小学",
                 "火车站", "高铁站", "地铁站", "客运站", "馆", "园", "阁", "楼",
-                "店", "院", "府", "城", "谷", "坊", "港", "基地", "大厦", "门"
+                "店", "院", "府", "城", "谷", "坊", "港", "基地", "大厦", "门", "湾"
         };
         for (String kw : poiKeywords) {
             if (addr.contains(kw)) {
