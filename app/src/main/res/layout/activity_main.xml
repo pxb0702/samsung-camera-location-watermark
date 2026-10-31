@@ -114,6 +114,26 @@
                 android:textColor="#1F2328"
                 android:singleLine="true" />
 
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="高德 Web 服务 Key (选填，解锁超精细航站楼/小区/园区)："
+                android:textColor="#1F2328"
+                android:textSize="13sp" />
+
+            <EditText
+                android:id="@+id/et_amap_key"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:background="#EFEFEF"
+                android:padding="10dp"
+                android:hint="留空默认使用 OSM+系统引擎优先解析建筑地标"
+                android:textSize="13sp"
+                android:textColor="#1F2328"
+                android:singleLine="true" />
+
         </LinearLayout>
 
         <!-- 权限与说明卡片 -->

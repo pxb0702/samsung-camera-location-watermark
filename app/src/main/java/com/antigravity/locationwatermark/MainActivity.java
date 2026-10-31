@@ -38,6 +38,7 @@ public class MainActivity extends AppCompatActivity {
     private TextView tvStatusDesc;
     private TextView tvLocationHint;
     private EditText etDeviceModel;
+    private EditText etAmapKey;
     private Button btnGrantPermissions;
     private Button btnPickPhotoTest;
     private ImageView imgPreview;
@@ -73,6 +74,7 @@ public class MainActivity extends AppCompatActivity {
         tvStatusDesc = findViewById(R.id.tv_status_desc);
         tvLocationHint = findViewById(R.id.tv_location_hint);
         etDeviceModel = findViewById(R.id.et_device_model);
+        etAmapKey = findViewById(R.id.et_amap_key);
         btnGrantPermissions = findViewById(R.id.btn_grant_permissions);
         btnPickPhotoTest = findViewById(R.id.btn_pick_photo_test);
         imgPreview = findViewById(R.id.img_preview);
@@ -88,6 +90,19 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void afterTextChanged(Editable s) {
                 prefs.edit().putString("custom_device_model", s.toString().trim()).apply();
+            }
+        });
+
+        String savedAmapKey = prefs.getString("amap_api_key", "");
+        etAmapKey.setText(savedAmapKey);
+        etAmapKey.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override
+            public void onTextChanged(CharSequence s, int start, int before, int count) {}
+            @Override
+            public void afterTextChanged(Editable s) {
+                prefs.edit().putString("amap_api_key", s.toString().trim()).apply();
             }
         });
 
