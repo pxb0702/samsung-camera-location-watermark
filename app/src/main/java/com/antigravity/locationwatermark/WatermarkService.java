@@ -8,6 +8,7 @@ import android.app.Service;
 import android.content.ContentUris;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.database.ContentObserver;
 import android.database.Cursor;
 import android.net.Uri;
@@ -30,10 +31,17 @@ public class WatermarkService extends Service {
     private static final String CHANNEL_ID = "watermark_monitor_channel";
     private static final int NOTIFICATION_ID = 1001;
 
+    public static final String ACTION_UPDATE_INTERVAL = "com.antigravity.locationwatermark.UPDATE_INTERVAL";
+
     private ContentObserver photoObserver;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Set<Long> processedImageIds = new HashSet<>();
     private static boolean isServiceRunning = false;
+
+    private SharedPreferences prefs;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private Runnable timerExpiryRunnable;
+    private volatile long lastWatermarkTimeMs = 0;
 
     public static boolean isRunning() {
         return isServiceRunning;
@@ -43,14 +51,38 @@ public class WatermarkService extends Service {
     public void onCreate() {
         super.onCreate();
         isServiceRunning = true;
+        prefs = getSharedPreferences("WatermarkPrefs", Context.MODE_PRIVATE);
+        lastWatermarkTimeMs = 0;
         createNotificationChannel();
-        startForeground(NOTIFICATION_ID, buildForegroundNotification("自动水印监听服务运行中", "正在监听三星相机新拍照片..."));
+        Notification initNotification = buildForegroundNotification("自动水印监听服务运行中", "正在监听三星相机新拍照片...");
+        startForeground(NOTIFICATION_ID, initNotification);
+        updateNotificationByCurrentState();
         registerPhotoObserver();
         Log.d(TAG, "WatermarkService 已启动并注册监听");
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        if (intent != null && ACTION_UPDATE_INTERVAL.equals(intent.getAction())) {
+            int intervalSeconds = prefs != null ? prefs.getInt("watermark_interval_seconds", 0) : 0;
+            Log.d(TAG, "收到更新间隔通知，当前间隔为: " + intervalSeconds + "秒");
+            if (intervalSeconds == 0) {
+                if (timerExpiryRunnable != null) {
+                    mainHandler.removeCallbacks(timerExpiryRunnable);
+                    timerExpiryRunnable = null;
+                }
+                lastWatermarkTimeMs = 0;
+                updateNotificationByCurrentState();
+            } else {
+                long elapsed = System.currentTimeMillis() - lastWatermarkTimeMs;
+                long cooldownMs = intervalSeconds * 1000L;
+                if (lastWatermarkTimeMs > 0 && elapsed < cooldownMs) {
+                    scheduleTimerExpiry(cooldownMs - elapsed, intervalSeconds);
+                } else {
+                    updateNotificationByCurrentState();
+                }
+            }
+        }
         return START_STICKY;
     }
 
@@ -109,6 +141,20 @@ public class WatermarkService extends Service {
                     return;
                 }
 
+                // 检查时间间隔与定时器
+                int intervalSeconds = prefs != null ? prefs.getInt("watermark_interval_seconds", 0) : 0;
+                if (intervalSeconds > 0 && lastWatermarkTimeMs > 0) {
+                    long elapsed = System.currentTimeMillis() - lastWatermarkTimeMs;
+                    long cooldownMs = intervalSeconds * 1000L;
+                    if (elapsed < cooldownMs) {
+                        // 处于定时器冷却期内，记录此照片已被跳过，避免定时器结束后重复处理
+                        processedImageIds.add(id);
+                        long remainingSec = (cooldownMs - elapsed) / 1000;
+                        Log.d(TAG, "处于间隔保护期内（剩余 " + remainingSec + " 秒），跳过照片: " + displayName);
+                        return;
+                    }
+                }
+
                 processedImageIds.add(id);
                 Uri photoUri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id);
 
@@ -121,7 +167,14 @@ public class WatermarkService extends Service {
 
                 WatermarkProcessor.WatermarkResult res = WatermarkProcessor.processPhoto(this, photoUri);
                 if (res.success) {
+                    lastWatermarkTimeMs = System.currentTimeMillis();
                     notifyWatermarkSuccess(res.address, res.savedUri);
+
+                    // 如果开启了间隔选项，启动定时器并更新前台常驻通知
+                    if (intervalSeconds > 0) {
+                        long cooldownMs = intervalSeconds * 1000L;
+                        scheduleTimerExpiry(cooldownMs, intervalSeconds);
+                    }
                 }
             }
         } catch (Exception e) {
@@ -188,10 +241,63 @@ public class WatermarkService extends Service {
         }
     }
 
+    private void scheduleTimerExpiry(long delayMs, int intervalSeconds) {
+        if (timerExpiryRunnable != null) {
+            mainHandler.removeCallbacks(timerExpiryRunnable);
+        }
+
+        String intervalName = formatIntervalText(intervalSeconds);
+        updateForegroundNotification(
+                "自动水印监听中 (定时器生效中)",
+                "刚完成一张水印，" + intervalName + "内暂停处理新照片以节省存储"
+        );
+
+        timerExpiryRunnable = () -> {
+            Log.d(TAG, "定时器到期，重新恢复监听新照片");
+            updateForegroundNotification("自动水印监听服务运行中", "正在监听三星相机新拍照片...");
+            timerExpiryRunnable = null;
+        };
+
+        mainHandler.postDelayed(timerExpiryRunnable, delayMs);
+    }
+
+    private String formatIntervalText(int seconds) {
+        if (seconds >= 60) {
+            int mins = seconds / 60;
+            return mins + "分钟";
+        }
+        return seconds + "秒";
+    }
+
+    private void updateNotificationByCurrentState() {
+        int intervalSeconds = prefs != null ? prefs.getInt("watermark_interval_seconds", 0) : 0;
+        if (intervalSeconds > 0 && lastWatermarkTimeMs > 0) {
+            long elapsed = System.currentTimeMillis() - lastWatermarkTimeMs;
+            long cooldownMs = intervalSeconds * 1000L;
+            if (elapsed < cooldownMs) {
+                scheduleTimerExpiry(cooldownMs - elapsed, intervalSeconds);
+                return;
+            }
+        }
+        updateForegroundNotification("自动水印监听服务运行中", "正在监听三星相机新拍照片...");
+    }
+
+    private void updateForegroundNotification(String title, String content) {
+        Notification notification = buildForegroundNotification(title, content);
+        NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        if (manager != null) {
+            manager.notify(NOTIFICATION_ID, notification);
+        }
+    }
+
     @Override
     public void onDestroy() {
         super.onDestroy();
         isServiceRunning = false;
+        if (timerExpiryRunnable != null) {
+            mainHandler.removeCallbacks(timerExpiryRunnable);
+            timerExpiryRunnable = null;
+        }
         if (photoObserver != null) {
             getContentResolver().unregisterContentObserver(photoObserver);
         }

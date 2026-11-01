@@ -15,6 +15,8 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.ProgressBar;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -44,6 +46,12 @@ public class MainActivity extends AppCompatActivity {
     private ImageView imgPreview;
     private TextView tvResultInfo;
     private ProgressBar progressBar;
+    private RadioGroup rgInterval;
+    private RadioButton rbIntervalAlways;
+    private RadioButton rbInterval1m;
+    private RadioButton rbInterval2m;
+    private RadioButton rbInterval5m;
+    private RadioButton rbInterval10m;
 
     private SharedPreferences prefs;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -80,6 +88,44 @@ public class MainActivity extends AppCompatActivity {
         imgPreview = findViewById(R.id.img_preview);
         tvResultInfo = findViewById(R.id.tv_result_info);
         progressBar = findViewById(R.id.progress_bar);
+
+        rgInterval = findViewById(R.id.rg_interval);
+        rbIntervalAlways = findViewById(R.id.rb_interval_always);
+        rbInterval1m = findViewById(R.id.rb_interval_1m);
+        rbInterval2m = findViewById(R.id.rb_interval_2m);
+        rbInterval5m = findViewById(R.id.rb_interval_5m);
+        rbInterval10m = findViewById(R.id.rb_interval_10m);
+
+        int savedInterval = prefs.getInt("watermark_interval_seconds", 0);
+        if (savedInterval == 60) {
+            rbInterval1m.setChecked(true);
+        } else if (savedInterval == 120) {
+            rbInterval2m.setChecked(true);
+        } else if (savedInterval == 300) {
+            rbInterval5m.setChecked(true);
+        } else if (savedInterval == 600) {
+            rbInterval10m.setChecked(true);
+        } else {
+            rbIntervalAlways.setChecked(true);
+        }
+
+        rgInterval.setOnCheckedChangeListener((group, checkedId) -> {
+            int seconds = 0;
+            if (checkedId == R.id.rb_interval_1m) {
+                seconds = 60;
+            } else if (checkedId == R.id.rb_interval_2m) {
+                seconds = 120;
+            } else if (checkedId == R.id.rb_interval_5m) {
+                seconds = 300;
+            } else if (checkedId == R.id.rb_interval_10m) {
+                seconds = 600;
+            } else {
+                seconds = 0;
+            }
+            prefs.edit().putInt("watermark_interval_seconds", seconds).apply();
+            notifyServiceIntervalChanged();
+            updateServiceState();
+        });
 
         etDeviceModel.setText(WatermarkProcessor.getDeviceModel(this));
         etDeviceModel.addTextChangedListener(new TextWatcher() {
@@ -187,9 +233,32 @@ public class MainActivity extends AppCompatActivity {
         boolean isRunning = WatermarkService.isRunning();
         switchService.setChecked(isRunning);
         if (isRunning) {
-            tvStatusDesc.setText("状态：已开启 (正在后台实时监听三星相机拍照)");
+            int interval = prefs.getInt("watermark_interval_seconds", 0);
+            String modeDesc;
+            if (interval == 60) {
+                modeDesc = "1分钟间隔";
+            } else if (interval == 120) {
+                modeDesc = "2分钟间隔";
+            } else if (interval == 300) {
+                modeDesc = "5分钟间隔";
+            } else if (interval == 600) {
+                modeDesc = "10分钟间隔";
+            } else {
+                modeDesc = "常开模式";
+            }
+            tvStatusDesc.setText("状态：已开启 (" + modeDesc + " 监听中)");
         } else {
             tvStatusDesc.setText("状态：未运行 (请开启服务以自动添加水印)");
+        }
+    }
+
+    private void notifyServiceIntervalChanged() {
+        if (WatermarkService.isRunning()) {
+            Intent intent = new Intent(this, WatermarkService.class);
+            intent.setAction(WatermarkService.ACTION_UPDATE_INTERVAL);
+            try {
+                startService(intent);
+            } catch (Exception ignored) {}
         }
     }
 
